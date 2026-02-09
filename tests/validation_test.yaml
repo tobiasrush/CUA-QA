@@ -1,0 +1,16 @@
+# Phase 0 Validation Test
+# This is a simple test to verify the CUA system is working correctly
+# Run this first to confirm your setup is correct
+
+name: CUA Validation Test
+platform: browser
+
+steps:
+  - action: "Open Safari browser using Command+Space to open Spotlight, then type Safari and press Enter"
+    expected: "Safari browser window is visible on screen"
+
+  - action: "Click on the Safari address bar and type 'google.com' then press Enter"
+    expected: "Google search page loads and is visible"
+
+  - action: "Type 'Anthropic Claude computer use' in the Google search box and press Enter"
+    expected: "Search results appear showing information about Anthropic and Claude"

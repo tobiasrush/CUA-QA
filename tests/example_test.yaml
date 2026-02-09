@@ -1,0 +1,18 @@
+# Example CUA QA Test Script
+# This test demonstrates the basic structure and verifies the system works
+
+name: Example Browser Test
+platform: browser
+
+steps:
+  - action: "Open Safari browser"
+    expected: "Safari window appears on screen"
+
+  - action: "Navigate to google.com by typing the URL in the address bar and pressing Enter"
+    expected: "Google homepage loads with search box visible"
+
+  - action: "Type 'Claude AI' in the search box and press Enter"
+    expected: "Search results page appears with results about Claude AI"
+
+  - action: "Click on the first search result"
+    expected: "A webpage loads with content about Claude AI"

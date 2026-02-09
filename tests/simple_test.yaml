@@ -1,0 +1,12 @@
+# Simple Test - Minimal steps to verify CUA works
+# Use this for quick validation
+
+name: Simple Validation
+platform: browser
+
+steps:
+  - action: "Take a screenshot of the current screen"
+    expected: "Screenshot is captured successfully"
+
+  - action: "Open Spotlight by pressing Command+Space, type 'Safari', and press Enter"
+    expected: "Safari browser opens"
