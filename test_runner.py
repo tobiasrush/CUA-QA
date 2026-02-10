@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import base64
+import time
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -33,9 +34,14 @@ class StepResult:
     expected: str
     status: str  # 'pass', 'fail', 'error'
     actual: str = ""
-    screenshot_path: Optional[str] = None
+    screenshot_paths: list[str] = field(default_factory=list)
     error_message: Optional[str] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    duration_seconds: float = 0.0
+    state_before: str = ""
+    state_after: str = ""
+    test_name: str = ""
+    grouping: str = ""
 
 
 @dataclass
@@ -64,7 +70,7 @@ class TestResult:
 class TestRunner:
     """Runs CUA QA tests from YAML test scripts."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, api_key: str, model: str = "claude-opus-4-6"):
         self.api_key = api_key
         self.model = model
         self.provider = APIProvider.ANTHROPIC
@@ -72,19 +78,26 @@ class TestRunner:
         self.reports_dir = Path("reports")
         self.screenshots_dir.mkdir(exist_ok=True)
         self.reports_dir.mkdir(exist_ok=True)
-        self.current_screenshot: Optional[str] = None
+        self.current_step_screenshots: list[str] = []
         self.current_step_id: str = ""
+        # Conversation context carried across steps within a test
+        self.messages: list[BetaMessageParam] = []
 
     def load_test(self, test_path: str) -> dict:
         """Load a test script from YAML file."""
         with open(test_path, 'r') as f:
             return yaml.safe_load(f)
 
-    async def run_test(self, test_path: str, verbose: bool = True) -> TestResult:
-        """Run a complete test from a YAML file."""
-        test_config = self.load_test(test_path)
-        test_name = test_config.get('name', Path(test_path).stem)
+    async def run_test(self, test_input, verbose: bool = True) -> TestResult:
+        """Run a complete test from a YAML file path or a pre-built test dict."""
+        if isinstance(test_input, dict):
+            test_config = test_input
+        else:
+            test_config = self.load_test(test_input)
+
+        test_name = test_config.get('name', Path(test_input).stem if isinstance(test_input, str) else 'unnamed')
         platform = test_config.get('platform', 'browser')
+        grouping = test_config.get('grouping', '')
         steps = test_config.get('steps', [])
 
         result = TestResult(
@@ -92,6 +105,9 @@ class TestRunner:
             platform=platform,
             start_time=datetime.now().isoformat()
         )
+
+        # Reset conversation context for this test
+        self.messages = []
 
         if verbose:
             print(f"\n{'='*60}")
@@ -103,18 +119,28 @@ class TestRunner:
         for i, step in enumerate(steps, 1):
             action = step.get('action', '')
             expected = step.get('expected', '')
+            state_before = step.get('state_before', '')
+            state_after = step.get('state_after', '')
 
             if verbose:
                 print(f"\n[Step {i}/{len(steps)}]")
                 print(f"  Action: {action}")
+                if state_before:
+                    print(f"  Precondition: {state_before}")
                 print(f"  Expected: {expected}")
+                if state_after:
+                    print(f"  Postcondition: {state_after}")
 
-            step_result = await self.run_step(i, action, expected, verbose)
+            step_result = await self.run_step(i, action, expected, verbose,
+                                              state_before=state_before, state_after=state_after)
+            step_result.test_name = test_name
+            step_result.grouping = grouping
             result.steps.append(step_result)
 
             if verbose:
-                status_icon = "✓" if step_result.status == 'pass' else "✗"
-                print(f"  Result: {status_icon} {step_result.status.upper()}")
+                status_icon = "PASS" if step_result.status == 'pass' else "FAIL"
+                print(f"  Result: {status_icon}")
+                print(f"  Duration: {step_result.duration_seconds:.1f}s")
                 if step_result.error_message:
                     print(f"  Error: {step_result.error_message}")
 
@@ -131,48 +157,60 @@ class TestRunner:
 
         return result
 
-    async def run_step(self, step_num: int, action: str, expected: str, verbose: bool = True) -> StepResult:
-        """Run a single test step."""
+    async def run_step(self, step_num: int, action: str, expected: str, verbose: bool = True,
+                       state_before: str = "", state_after: str = "") -> StepResult:
+        """Run a single test step, carrying conversation context from prior steps."""
         self.current_step_id = f"step_{step_num}_{datetime.now().strftime('%H%M%S')}"
-        self.current_screenshot = None
+        self.current_step_screenshots = []
+        screenshot_counter = 0
+        step_start = time.monotonic()
 
-        # Build the prompt for Claude
-        prompt = f"""Execute this test step and verify the result:
+        # Build the prompt for this step
+        prompt_parts = [f"Execute this test step and verify the result:\n\nACTION: {action}"]
 
-ACTION: {action}
+        if state_before:
+            prompt_parts.append(f"PRECONDITION: {state_before}")
 
-After completing the action, verify if the following expected result is true:
-EXPECTED: {expected}
+        prompt_parts.append(f"\nAfter completing the action, verify if the following expected result is true:\nEXPECTED OUTCOME: {expected}")
 
-First, take a screenshot to see the current state. Then perform the action.
-After performing the action, take another screenshot and evaluate if the expected result is visible/true.
+        if state_after:
+            prompt_parts.append(f"POSTCONDITION: {state_after}")
 
-Respond with your assessment in this format:
-- VERIFICATION: PASS or FAIL
-- OBSERVATION: What you actually observed
-"""
+        prompt_parts.append(
+            "\nFirst, take a screenshot to see the current state. Then perform the action.\n"
+            "After performing the action, take another screenshot and evaluate if the expected result is visible/true.\n\n"
+            "Respond with your assessment in this format:\n"
+            "- VERIFICATION: PASS or FAIL\n"
+            "- OBSERVATION: What you actually observed"
+        )
 
-        messages: list[BetaMessageParam] = [
-            {"role": "user", "content": prompt}
-        ]
+        prompt = "\n".join(prompt_parts)
+
+        # Append to existing conversation context (not a fresh list)
+        self.messages.append({"role": "user", "content": prompt})
 
         collected_output = []
-        verification_result = None
-        observation = ""
 
         def output_callback(content_block):
-            if isinstance(content_block, dict) and content_block.get("type") == "text":
+            if hasattr(content_block, 'type') and content_block.type == "text":
+                text = content_block.text
+                collected_output.append(text)
+                if verbose:
+                    print(f"    Claude: {text[:100]}..." if len(text) > 100 else f"    Claude: {text}")
+            elif isinstance(content_block, dict) and content_block.get("type") == "text":
                 text = content_block.get("text", "")
                 collected_output.append(text)
                 if verbose:
                     print(f"    Claude: {text[:100]}..." if len(text) > 100 else f"    Claude: {text}")
 
         def tool_output_callback(result: ToolResult, tool_use_id: str):
+            nonlocal screenshot_counter
             if result.base64_image:
-                screenshot_path = self.screenshots_dir / f"{self.current_step_id}.png"
+                screenshot_counter += 1
+                screenshot_path = self.screenshots_dir / f"{self.current_step_id}_{screenshot_counter}.png"
                 with open(screenshot_path, "wb") as f:
                     f.write(base64.b64decode(result.base64_image))
-                self.current_screenshot = str(screenshot_path)
+                self.current_step_screenshots.append(str(screenshot_path))
                 if verbose:
                     print(f"    Screenshot saved: {screenshot_path}")
             if result.output and verbose:
@@ -181,21 +219,24 @@ Respond with your assessment in this format:
                 print(f"    Tool error: {result.error}")
 
         def api_response_callback(response: APIResponse[BetaMessage]):
-            pass  # Suppress API response output
+            pass
 
         try:
+            # Pass the accumulated messages — sampling_loop mutates in place
             await sampling_loop(
                 model=self.model,
                 provider=self.provider,
                 system_prompt_suffix="You are a QA testing agent. Execute actions precisely and verify results accurately.",
-                messages=messages,
+                messages=self.messages,
                 output_callback=output_callback,
                 tool_output_callback=tool_output_callback,
                 api_response_callback=api_response_callback,
                 api_key=self.api_key,
-                only_n_most_recent_images=5,
+                only_n_most_recent_images=10,
                 max_tokens=4096,
             )
+
+            step_duration = time.monotonic() - step_start
 
             # Parse verification from Claude's output
             full_output = " ".join(collected_output)
@@ -204,7 +245,7 @@ Respond with your assessment in this format:
             elif "VERIFICATION: FAIL" in full_output.upper():
                 verification_result = "fail"
             else:
-                verification_result = "pass"  # Default to pass if not explicitly stated
+                verification_result = "fail"  # Default to FAIL when unclear
 
             # Extract observation
             if "OBSERVATION:" in full_output.upper():
@@ -219,17 +260,24 @@ Respond with your assessment in this format:
                 expected=expected,
                 status=verification_result,
                 actual=observation,
-                screenshot_path=self.current_screenshot
+                screenshot_paths=list(self.current_step_screenshots),
+                duration_seconds=step_duration,
+                state_before=state_before,
+                state_after=state_after,
             )
 
         except Exception as e:
+            step_duration = time.monotonic() - step_start
             return StepResult(
                 step_number=step_num,
                 action=action,
                 expected=expected,
                 status="error",
                 error_message=str(e),
-                screenshot_path=self.current_screenshot
+                screenshot_paths=list(self.current_step_screenshots),
+                duration_seconds=step_duration,
+                state_before=state_before,
+                state_after=state_after,
             )
 
     def generate_report(self, result: TestResult) -> str:
@@ -241,11 +289,11 @@ Respond with your assessment in this format:
 
         # Convert screenshots to base64 for embedding in HTML
         for step in result.steps:
-            if step.screenshot_path and Path(step.screenshot_path).exists():
-                with open(step.screenshot_path, 'rb') as f:
-                    step.screenshot_base64 = base64.b64encode(f.read()).decode()
-            else:
-                step.screenshot_base64 = None
+            step.screenshots_base64 = []
+            for spath in step.screenshot_paths:
+                if Path(spath).exists():
+                    with open(spath, 'rb') as f:
+                        step.screenshots_base64.append(base64.b64encode(f.read()).decode())
 
         html_content = template.render(result=result)
 
@@ -286,8 +334,12 @@ HTML_REPORT_TEMPLATE = """<!DOCTYPE html>
         .step-detail { margin-bottom: 10px; }
         .step-detail label { font-weight: 600; color: #666; font-size: 12px; text-transform: uppercase; display: block; margin-bottom: 4px; }
         .step-detail p { color: #333; }
-        .screenshot { margin-top: 15px; }
-        .screenshot img { max-width: 100%; border: 1px solid #ddd; border-radius: 8px; }
+        .step-duration { color: #888; font-size: 13px; }
+        .screenshots { margin-top: 15px; }
+        .screenshots-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+        .screenshots-grid .screenshot-item { flex: 1; min-width: 300px; }
+        .screenshots-grid .screenshot-item img { max-width: 100%; border: 1px solid #ddd; border-radius: 8px; }
+        .screenshots-grid .screenshot-item .screenshot-label { font-size: 11px; color: #888; margin-bottom: 4px; }
         .overall-status { text-align: center; padding: 20px; font-size: 18px; }
         .overall-status.pass { color: #22c55e; }
         .overall-status.fail { color: #ef4444; }
@@ -325,6 +377,7 @@ HTML_REPORT_TEMPLATE = """<!DOCTYPE html>
                 <div class="step-number">{{ step.step_number }}</div>
                 <div style="flex: 1;">
                     <strong>{{ step.action }}</strong>
+                    <span class="step-duration">({{ "%.1f"|format(step.duration_seconds) }}s)</span>
                 </div>
                 <div class="step-status {{ step.status }}">{{ step.status }}</div>
             </div>
@@ -337,10 +390,17 @@ HTML_REPORT_TEMPLATE = """<!DOCTYPE html>
                     <label>Actual Result</label>
                     <p>{{ step.actual or step.error_message or 'N/A' }}</p>
                 </div>
-                {% if step.screenshot_base64 %}
-                <div class="screenshot">
-                    <label>Screenshot</label>
-                    <img src="data:image/png;base64,{{ step.screenshot_base64 }}" alt="Step {{ step.step_number }} screenshot">
+                {% if step.screenshots_base64 %}
+                <div class="screenshots">
+                    <label style="font-weight: 600; color: #666; font-size: 12px; text-transform: uppercase; display: block; margin-bottom: 8px;">Screenshots</label>
+                    <div class="screenshots-grid">
+                        {% for screenshot_b64 in step.screenshots_base64 %}
+                        <div class="screenshot-item">
+                            <div class="screenshot-label">{% if loop.first %}Before{% elif loop.last and not loop.first %}After{% else %}During ({{ loop.index }}){% endif %}</div>
+                            <img src="data:image/png;base64,{{ screenshot_b64 }}" alt="Step {{ step.step_number }} screenshot {{ loop.index }}">
+                        </div>
+                        {% endfor %}
+                    </div>
                 </div>
                 {% endif %}
             </div>
@@ -358,34 +418,122 @@ HTML_REPORT_TEMPLATE = """<!DOCTYPE html>
 
 async def main():
     """Main entry point for the test runner."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable not set")
-        print("Get your API key from https://console.anthropic.com/settings/keys")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="CUA QA Test Runner")
+    parser.add_argument("test_file", nargs="?", help="YAML test file path")
+    parser.add_argument("--sheet", metavar="SHEET_ID", help="Google Sheet ID to load tests from")
+    parser.add_argument("--test", metavar="TEST_NAME", help="Run a single test by name (requires --sheet)")
+    parser.add_argument("--group", metavar="GROUP_NAME", help="Run all tests in a group (requires --sheet)")
+    parser.add_argument("--report", action="store_true", help="Generate HTML report")
+    parser.add_argument("--dry-run", action="store_true", help="List tests without executing CUA")
+    args = parser.parse_args()
+
+    if not args.sheet and not args.test_file:
+        parser.print_help()
         sys.exit(1)
 
-    # Parse command line arguments
-    if len(sys.argv) < 2:
-        print("Usage: python test_runner.py <test_file.yaml> [--report]")
-        print("       python test_runner.py tests/example_test.yaml --report")
-        sys.exit(1)
+    # Sheets mode
+    if args.sheet:
+        from sheets_loader import load_tests_from_sheet, write_results_to_sheet
 
-    test_path = sys.argv[1]
-    generate_report = "--report" in sys.argv
+        print(f"Loading tests from Google Sheet: {args.sheet}")
+        all_tests = load_tests_from_sheet(args.sheet)
+        print(f"Found {len(all_tests)} tests")
 
-    if not Path(test_path).exists():
-        print(f"Error: Test file not found: {test_path}")
-        sys.exit(1)
+        # Filter by --test or --group
+        if args.test:
+            tests = [t for t in all_tests if t["name"] == args.test]
+            if not tests:
+                print(f"Error: No test found with name '{args.test}'")
+                print("Available tests:")
+                for t in all_tests:
+                    print(f"  [{t['grouping']}] {t['name']}")
+                sys.exit(1)
+        elif args.group:
+            tests = [t for t in all_tests if t["grouping"] == args.group]
+            if not tests:
+                print(f"Error: No tests found in group '{args.group}'")
+                print("Available groups:")
+                groups = sorted(set(t["grouping"] for t in all_tests))
+                for g in groups:
+                    count = sum(1 for t in all_tests if t["grouping"] == g)
+                    print(f"  {g} ({count} tests)")
+                sys.exit(1)
+        else:
+            tests = all_tests
 
-    runner = TestRunner(api_key)
-    result = await runner.run_test(test_path)
+        # Dry run — just list tests
+        if args.dry_run:
+            print(f"\nDry run — {len(tests)} tests would be executed:\n")
+            for i, t in enumerate(tests, 1):
+                step = t["steps"][0]
+                print(f"  {i}. [{t['grouping']}] {t['name']}")
+                print(f"     Action: {step['action']}")
+                print(f"     Expected: {step['expected']}")
+                if step.get("state_before"):
+                    print(f"     Precondition: {step['state_before']}")
+                if step.get("state_after"):
+                    print(f"     Postcondition: {step['state_after']}")
+                print()
+            sys.exit(0)
 
-    if generate_report:
-        report_path = runner.generate_report(result)
-        print(f"\nReport generated: {report_path}")
+        # Run tests
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("Error: ANTHROPIC_API_KEY environment variable not set")
+            sys.exit(1)
 
-    # Exit with appropriate code
-    sys.exit(0 if result.status == 'pass' else 1)
+        runner = TestRunner(api_key)
+        all_results = []
+        sheet_results = []
+
+        for test_config in tests:
+            result = await runner.run_test(test_config)
+            all_results.append(result)
+
+            # Collect results for writing back to sheet
+            for step in result.steps:
+                sheet_results.append({
+                    "grouping": step.grouping,
+                    "test_name": step.test_name,
+                    "expected": step.expected,
+                    "actual": step.actual or step.error_message or "",
+                })
+
+            if args.report:
+                report_path = runner.generate_report(result)
+                print(f"Report generated: {report_path}")
+
+        # Write results back to Google Sheet
+        if sheet_results:
+            rows_written = write_results_to_sheet(args.sheet, sheet_results)
+            print(f"\nWrote {rows_written} result(s) to Google Sheet Results tab")
+
+        # Exit with appropriate code
+        any_failed = any(r.status != "pass" for r in all_results)
+        sys.exit(1 if any_failed else 0)
+
+    # YAML mode (existing behavior)
+    else:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("Error: ANTHROPIC_API_KEY environment variable not set")
+            sys.exit(1)
+
+        test_path = args.test_file
+        if not Path(test_path).exists():
+            print(f"Error: Test file not found: {test_path}")
+            sys.exit(1)
+
+        runner = TestRunner(api_key)
+        result = await runner.run_test(test_path)
+
+        if args.report:
+            report_path = runner.generate_report(result)
+            print(f"\nReport generated: {report_path}")
+
+        sys.exit(0 if result.status == "pass" else 1)
 
 
 if __name__ == "__main__":

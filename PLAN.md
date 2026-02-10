@@ -136,9 +136,9 @@ CUA is Anthropic's capability that allows Claude to **see and control** a comput
 1. ✅ Get Anthropic API key from [console.anthropic.com](https://console.anthropic.com)
 2. ✅ Clone `PallavAg/claude-computer-use-macos` into CUA-QA folder
 3. ✅ Set up Python environment and install deps
-4. ⏳ Grant macOS Accessibility permissions
-5. ⏳ Run validation test
-6. ⏳ Confirm: Claude takes screenshots, clicks, types, completes task
+4. ✅ Grant macOS Accessibility permissions
+5. ✅ Run validation test
+6. ✅ Confirm: Claude takes screenshots, clicks, types, completes task
 
 **Success criteria:** Claude successfully navigates Safari and performs a search.
 
@@ -191,8 +191,8 @@ steps:
 ### Phase 0 Verification
 - [x] Anthropic API key obtained and working
 - [x] macOS demo cloned and dependencies installed
-- [ ] Accessibility permissions granted
-- [ ] Simple test runs successfully (Safari + Google search)
+- [x] Accessibility permissions granted
+- [x] Simple test runs successfully (Safari + Google search)
 
 ### Phase 1 Verification
 - [x] Test script (YAML) loads correctly
@@ -211,6 +211,8 @@ PyAutoGUI>=0.9.54
 PyYAML>=6.0
 Jinja2>=3.1.0
 python-dotenv>=1.0.0
+gspread>=6.0.0
+google-auth>=2.0.0
 ```
 
 ---
@@ -225,9 +227,29 @@ python-dotenv>=1.0.0
 
 ---
 
-## Future Phases (Out of Scope)
+### Phase 2: Google Sheets Integration (In Progress)
 
-- Phase 2: Google Sheets integration
+**Goal:** Read test scripts from Google Sheets instead of local YAML files.
+
+**GCP Setup:** ✅ COMPLETE
+- **GCP Project:** `cua-qa` (project number: 334341798643)
+- **GCP Account:** `toby@useideem.com`
+- **Service Account:** `cua-qa-sheets@cua-qa.iam.gserviceaccount.com`
+- **APIs Enabled:** Google Sheets API, Google Drive API
+- **Key Location:** `~/Library/CloudStorage/GoogleDrive-tobyrush@gmail.com/My Drive/claude-config/credentials/cua-qa-service-account.json`
+
+**Access Model:** Service account only has access to files explicitly shared with `cua-qa-sheets@cua-qa.iam.gserviceaccount.com`. No broad org permissions.
+
+**Remaining Steps:**
+- [x] Install `gspread` + `google-auth` Python dependencies
+- [x] Add Sheets loader to test_runner.py
+- [x] Define spreadsheet column format (Step #, Action, Expected Result)
+- [ ] Test with a sample Google Sheet
+
+---
+
+### Future Phases (Out of Scope)
+
 - Phase 3: iOS testing (iPhone Mirroring)
 - Phase 4: Android testing (scrcpy)
 

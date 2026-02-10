@@ -69,7 +69,7 @@ async def main():
 
     # Run the sampling loop
     messages = await sampling_loop(
-        model="claude-3-5-sonnet-20241022",
+        model="claude-opus-4-6",
         provider=provider,
         system_prompt_suffix="",
         messages=messages,

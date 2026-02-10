@@ -33,6 +33,7 @@ dist/
 screenshots/
 reports/
 .env
+service-account.json
 
 # Keep test files
 !tests/*.yaml

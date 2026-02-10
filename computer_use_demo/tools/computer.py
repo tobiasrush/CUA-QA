@@ -4,7 +4,7 @@ import io
 from enum import StrEnum
 from typing import Literal, TypedDict
 import pyautogui
-from anthropic.types.beta import BetaToolComputerUse20241022Param
+from anthropic.types.beta import BetaToolComputerUse20251124Param
 
 from .base import BaseAnthropicTool, ToolError, ToolResult
 
@@ -20,10 +20,10 @@ Action = Literal[
     "left_click",
     "left_click_drag",
     "right_click",
-    "middle_click",
     "double_click",
     "screenshot",
     "cursor_position",
+    "scroll",
 ]
 
 
@@ -49,7 +49,7 @@ class ComputerTool(BaseAnthropicTool):
     """
 
     name: Literal["computer"] = "computer"
-    api_type: Literal["computer_20250124"] = "computer_20250124"
+    api_type: Literal["computer_20251124"] = "computer_20251124"
     width: int
     height: int
     display_num: int | None
@@ -65,7 +65,7 @@ class ComputerTool(BaseAnthropicTool):
             "display_number": self.display_num,
         }
 
-    def to_params(self) -> BetaToolComputerUse20241022Param:
+    def to_params(self) -> BetaToolComputerUse20251124Param:
         return {"name": self.name, "type": self.api_type, **self.options}
 
     def __init__(self):
@@ -156,7 +156,6 @@ class ComputerTool(BaseAnthropicTool):
                     "down": "down",
                     "left": "left",
                     "right": "right",
-                    # Add more special keys as needed
                 }
                 key_sequence = [special_keys.get(key, key) for key in key_sequence]
                 await asyncio.to_thread(pyautogui.hotkey, *key_sequence)
@@ -167,34 +166,73 @@ class ComputerTool(BaseAnthropicTool):
                 )
                 return ToolResult(output=f"Typed text: {text}")
 
-        if action in (
-            "left_click",
-            "right_click",
-            "double_click",
-            "screenshot",
-            "cursor_position",
-        ):
+        if action in ("left_click", "right_click", "double_click"):
             if text is not None:
                 raise ToolError(f"text is not accepted for {action}")
-            if coordinate is not None:
-                raise ToolError(f"coordinate is not accepted for {action}")
 
-            if action == "screenshot":
-                return await self.screenshot()
-            elif action == "cursor_position":
-                x, y = pyautogui.position()
-                x, y = self.scale_coordinates(ScalingSource.COMPUTER, int(x), int(y))
-                return ToolResult(output=f"X={x},Y={y}")
-            else:
-                if action == "left_click":
-                    await asyncio.to_thread(pyautogui.click, button="left")
-                    return ToolResult(output="Left click performed.")
-                elif action == "right_click":
-                    await asyncio.to_thread(pyautogui.click, button="right")
-                    return ToolResult(output="Right click performed.")
-                elif action == "double_click":
-                    await asyncio.to_thread(pyautogui.doubleClick)
-                    return ToolResult(output="Double click performed.")
+            # If coordinate provided, move to it first
+            if coordinate is not None:
+                if not isinstance(coordinate, list) or len(coordinate) != 2:
+                    raise ToolError(f"coordinate must be a list of length 2")
+                if not all(isinstance(i, int) and i >= 0 for i in coordinate):
+                    raise ToolError(f"coordinate must be a list of non-negative integers")
+                x, y = self.scale_coordinates(
+                    ScalingSource.API, coordinate[0], coordinate[1]
+                )
+                await asyncio.to_thread(pyautogui.moveTo, x, y)
+
+            if action == "left_click":
+                await asyncio.to_thread(pyautogui.click, button="left")
+                return ToolResult(output="Left click performed.")
+            elif action == "right_click":
+                await asyncio.to_thread(pyautogui.click, button="right")
+                return ToolResult(output="Right click performed.")
+            elif action == "double_click":
+                await asyncio.to_thread(pyautogui.doubleClick)
+                return ToolResult(output="Double click performed.")
+
+        if action == "screenshot":
+            if text is not None:
+                raise ToolError(f"text is not accepted for {action}")
+            return await self.screenshot()
+
+        if action == "cursor_position":
+            if text is not None:
+                raise ToolError(f"text is not accepted for {action}")
+            x, y = pyautogui.position()
+            x, y = self.scale_coordinates(ScalingSource.COMPUTER, int(x), int(y))
+            return ToolResult(output=f"X={x},Y={y}")
+
+        if action == "scroll":
+            if text is not None:
+                raise ToolError(f"text is not accepted for {action}")
+            if coordinate is None:
+                raise ToolError(f"coordinate is required for {action}")
+            if not isinstance(coordinate, list) or len(coordinate) != 2:
+                raise ToolError(f"coordinate must be a list of length 2")
+            if not all(isinstance(i, int) and i >= 0 for i in coordinate):
+                raise ToolError(f"coordinate must be a list of non-negative integers")
+
+            x, y = self.scale_coordinates(
+                ScalingSource.API, coordinate[0], coordinate[1]
+            )
+            await asyncio.to_thread(pyautogui.moveTo, x, y)
+
+            scroll_direction = kwargs.get("scroll_direction", "down")
+            scroll_amount = kwargs.get("scroll_amount", 3)
+
+            # pyautogui.scroll: positive = up, negative = down
+            direction_map = {"up": 1, "down": -1, "left": 0, "right": 0}
+            multiplier = direction_map.get(scroll_direction, -1)
+            clicks = scroll_amount * multiplier
+            if clicks != 0:
+                await asyncio.to_thread(pyautogui.scroll, clicks)
+            # Handle horizontal scroll
+            if scroll_direction in ("left", "right"):
+                h_clicks = scroll_amount * (1 if scroll_direction == "right" else -1)
+                await asyncio.to_thread(pyautogui.hscroll, h_clicks)
+
+            return ToolResult(output=f"Scrolled {scroll_direction} by {scroll_amount} at ({x}, {y}).")
 
         raise ToolError(f"Invalid action: {action}")
 

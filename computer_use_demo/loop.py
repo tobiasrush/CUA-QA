@@ -24,7 +24,7 @@ from anthropic.types.beta import (
 
 from .tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
 
-BETA_FLAG = "computer-use-2025-01-24"
+BETA_FLAG = "computer-use-2025-11-24"
 
 
 class APIProvider(StrEnum):
@@ -34,7 +34,7 @@ class APIProvider(StrEnum):
 
 
 PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
-    APIProvider.ANTHROPIC: "claude-3-5-sonnet-20241022",
+    APIProvider.ANTHROPIC: "claude-opus-4-6",
     APIProvider.BEDROCK: "anthropic.claude-3-5-sonnet-20241022-v2:0",
     APIProvider.VERTEX: "claude-3-5-sonnet-v2@20241022",
 }
@@ -107,7 +107,7 @@ async def sampling_loop(
             model=model,
             system=system,
             tools=tool_collection.to_params(),
-            betas=["computer-use-2025-01-24"],
+            betas=[BETA_FLAG],
         )
 
         api_response_callback(cast(APIResponse[BetaMessage], raw_response))
