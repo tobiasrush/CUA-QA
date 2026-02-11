@@ -161,8 +161,18 @@ class ComputerTool(BaseAnthropicTool):
                 await asyncio.to_thread(pyautogui.hotkey, *key_sequence)
                 return ToolResult(output=f"Key combination '{text}' pressed.")
             elif action == "type":
+                # Use clipboard paste on macOS to avoid emoji picker triggers
+                # pyautogui.hotkey("command", "v") is unreliable on macOS —
+                # use AppleScript paste via System Events instead
+                import subprocess
                 await asyncio.to_thread(
-                    pyautogui.write, text, interval=TYPING_DELAY_MS / 1000.0
+                    subprocess.run, ["pbcopy"], input=text.encode(), check=True
+                )
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["osascript", "-e",
+                     'tell application "System Events" to keystroke "v" using command down'],
+                    check=True, timeout=5
                 )
                 return ToolResult(output=f"Typed text: {text}")
 

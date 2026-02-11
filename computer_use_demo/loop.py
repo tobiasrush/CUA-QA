@@ -73,6 +73,7 @@ async def sampling_loop(
     api_key: str,
     only_n_most_recent_images: int | None = None,
     max_tokens: int = 4096,
+    max_turns: int = 15,
 ):
     """
     Agentic sampling loop for the assistant/tool interaction of computer use.
@@ -86,7 +87,8 @@ async def sampling_loop(
         f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
     )
 
-    while True:
+    turns = 0
+    while turns < max_turns:
         if only_n_most_recent_images:
             _maybe_filter_to_n_most_recent_images(messages, only_n_most_recent_images)
 
@@ -138,6 +140,9 @@ async def sampling_loop(
             return messages
 
         messages.append({"content": tool_result_content, "role": "user"})
+        turns += 1
+
+    return messages
 
 
 def _maybe_filter_to_n_most_recent_images(

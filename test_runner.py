@@ -3,6 +3,12 @@ CUA QA Test Runner
 Executes test scripts defined in YAML format using Claude's Computer Use API.
 """
 
+import functools
+import sys
+
+# Force unbuffered stdout so output appears in real-time when piped
+print = functools.partial(print, flush=True)
+
 import asyncio
 import os
 import sys
@@ -33,7 +39,8 @@ class StepResult:
     action: str
     expected: str
     status: str  # 'pass', 'fail', 'error'
-    actual: str = ""
+    actual: str = ""  # Debug console output (Debug_Results)
+    cua_comments: str = ""  # Full LLM response text (CUA_Comments)
     screenshot_paths: list[str] = field(default_factory=list)
     error_message: Optional[str] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -70,7 +77,7 @@ class TestResult:
 class TestRunner:
     """Runs CUA QA tests from YAML test scripts."""
 
-    def __init__(self, api_key: str, model: str = "claude-opus-4-6"):
+    def __init__(self, api_key: str, model: str = "claude-opus-4-6", initialization_instructions: str = ""):
         self.api_key = api_key
         self.model = model
         self.provider = APIProvider.ANTHROPIC
@@ -80,6 +87,7 @@ class TestRunner:
         self.reports_dir.mkdir(exist_ok=True)
         self.current_step_screenshots: list[str] = []
         self.current_step_id: str = ""
+        self.initialization_instructions: str = initialization_instructions
         # Conversation context carried across steps within a test
         self.messages: list[BetaMessageParam] = []
 
@@ -88,7 +96,7 @@ class TestRunner:
         with open(test_path, 'r') as f:
             return yaml.safe_load(f)
 
-    async def run_test(self, test_input, verbose: bool = True) -> TestResult:
+    async def run_test(self, test_input, verbose: bool = True, keep_context: bool = False) -> TestResult:
         """Run a complete test from a YAML file path or a pre-built test dict."""
         if isinstance(test_input, dict):
             test_config = test_input
@@ -106,8 +114,9 @@ class TestRunner:
             start_time=datetime.now().isoformat()
         )
 
-        # Reset conversation context for this test
-        self.messages = []
+        # Reset conversation context unless keeping it from previous test
+        if not keep_context:
+            self.messages = []
 
         if verbose:
             print(f"\n{'='*60}")
@@ -138,20 +147,20 @@ class TestRunner:
             result.steps.append(step_result)
 
             if verbose:
-                status_icon = "PASS" if step_result.status == 'pass' else "FAIL"
-                print(f"  Result: {status_icon}")
+                print(f"  Result: {step_result.status.upper()}")
                 print(f"  Duration: {step_result.duration_seconds:.1f}s")
+                if step_result.actual:
+                    print(f"  Debug Results: {step_result.actual[:200]}")
                 if step_result.error_message:
                     print(f"  Error: {step_result.error_message}")
 
         result.end_time = datetime.now().isoformat()
-        result.status = 'pass' if result.failed_count == 0 and result.error_count == 0 else 'fail'
+        result.status = 'error' if result.error_count > 0 else 'done'
 
         if verbose:
             print(f"\n{'='*60}")
             print(f"Test Complete: {result.status.upper()}")
-            print(f"  Passed: {result.passed_count}/{len(result.steps)}")
-            print(f"  Failed: {result.failed_count}/{len(result.steps)}")
+            print(f"  Steps: {len(result.steps)}")
             print(f"  Errors: {result.error_count}/{len(result.steps)}")
             print(f"{'='*60}\n")
 
@@ -166,22 +175,23 @@ class TestRunner:
         step_start = time.monotonic()
 
         # Build the prompt for this step
-        prompt_parts = [f"Execute this test step and verify the result:\n\nACTION: {action}"]
+        prompt_parts = [f"Execute this test step:\n\nACTION: {action}"]
 
         if state_before:
             prompt_parts.append(f"PRECONDITION: {state_before}")
 
-        prompt_parts.append(f"\nAfter completing the action, verify if the following expected result is true:\nEXPECTED OUTCOME: {expected}")
+        if expected:
+            prompt_parts.append(f"EXPECTED OUTCOME: {expected}")
 
         if state_after:
             prompt_parts.append(f"POSTCONDITION: {state_after}")
 
         prompt_parts.append(
             "\nFirst, take a screenshot to see the current state. Then perform the action.\n"
-            "After performing the action, take another screenshot and evaluate if the expected result is visible/true.\n\n"
-            "Respond with your assessment in this format:\n"
-            "- VERIFICATION: PASS or FAIL\n"
-            "- OBSERVATION: What you actually observed"
+            "After performing the action, take a screenshot and read the DEBUG OUTPUT section. "
+            "The DEBUG OUTPUT section has a dark header bar labeled 'DEBUG OUTPUT' and displays JSON log lines below it.\n\n"
+            "Respond with:\n"
+            "- DEBUG_RESULTS: Copy the exact text from the DEBUG OUTPUT section"
         )
 
         prompt = "\n".join(prompt_parts)
@@ -223,43 +233,45 @@ class TestRunner:
 
         try:
             # Pass the accumulated messages — sampling_loop mutates in place
+            system_suffix_parts = [
+                "You are a QA testing agent. Execute actions precisely. "
+                "IMPORTANT: wait is NOT a valid action. triple_click is NOT a valid action. "
+                "To select all text in an input field, use the key action with cmd+a.",
+            ]
+            if self.initialization_instructions:
+                system_suffix_parts.append(self.initialization_instructions)
+
             await sampling_loop(
                 model=self.model,
                 provider=self.provider,
-                system_prompt_suffix="You are a QA testing agent. Execute actions precisely and verify results accurately.",
+                system_prompt_suffix="\n".join(system_suffix_parts),
                 messages=self.messages,
                 output_callback=output_callback,
                 tool_output_callback=tool_output_callback,
                 api_response_callback=api_response_callback,
                 api_key=self.api_key,
-                only_n_most_recent_images=10,
+                only_n_most_recent_images=3,
                 max_tokens=4096,
             )
 
             step_duration = time.monotonic() - step_start
 
-            # Parse verification from Claude's output
             full_output = " ".join(collected_output)
-            if "VERIFICATION: PASS" in full_output.upper():
-                verification_result = "pass"
-            elif "VERIFICATION: FAIL" in full_output.upper():
-                verification_result = "fail"
-            else:
-                verification_result = "fail"  # Default to FAIL when unclear
 
-            # Extract observation
-            if "OBSERVATION:" in full_output.upper():
-                obs_start = full_output.upper().find("OBSERVATION:")
-                observation = full_output[obs_start + 12:].strip()
+            # Extract DEBUG_RESULTS from CUA output
+            if "DEBUG_RESULTS:" in full_output:
+                dr_start = full_output.find("DEBUG_RESULTS:") + len("DEBUG_RESULTS:")
+                debug_results = full_output[dr_start:].strip()
             else:
-                observation = full_output[:200] if full_output else "No observation recorded"
+                debug_results = full_output[:500] if full_output else ""
 
             return StepResult(
                 step_number=step_num,
                 action=action,
                 expected=expected,
-                status=verification_result,
-                actual=observation,
+                status="done",
+                actual=debug_results,
+                cua_comments=full_output,
                 screenshot_paths=list(self.current_step_screenshots),
                 duration_seconds=step_duration,
                 state_before=state_before,
@@ -423,10 +435,13 @@ async def main():
     parser = argparse.ArgumentParser(description="CUA QA Test Runner")
     parser.add_argument("test_file", nargs="?", help="YAML test file path")
     parser.add_argument("--sheet", metavar="SHEET_ID", help="Google Sheet ID to load tests from")
-    parser.add_argument("--test", metavar="TEST_NAME", help="Run a single test by name (requires --sheet)")
+    parser.add_argument("--test", metavar="TEST_NAME", action="append", help="Run test(s) by name — can be repeated (requires --sheet)")
     parser.add_argument("--group", metavar="GROUP_NAME", help="Run all tests in a group (requires --sheet)")
     parser.add_argument("--report", action="store_true", help="Generate HTML report")
     parser.add_argument("--dry-run", action="store_true", help="List tests without executing CUA")
+    parser.add_argument("--platform", choices=["browser", "ios", "android"], default="browser", help="Target platform (default: browser)")
+    parser.add_argument("--sequential", action="store_true", help="Share CUA conversation context across tests (for dependent test sequences)")
+    parser.add_argument("--url", metavar="URL", help="Navigate to this URL before running tests")
     args = parser.parse_args()
 
     if not args.sheet and not args.test_file:
@@ -435,17 +450,22 @@ async def main():
 
     # Sheets mode
     if args.sheet:
-        from sheets_loader import load_tests_from_sheet, write_results_to_sheet
+        from sheets_loader import load_tests_from_sheet, load_initialization_from_sheet, write_results_to_sheet
 
-        print(f"Loading tests from Google Sheet: {args.sheet}")
-        all_tests = load_tests_from_sheet(args.sheet)
+        print(f"Loading tests from Google Sheet: {args.sheet} (platform: {args.platform})")
+        init_instructions = load_initialization_from_sheet(args.sheet, platform=args.platform)
+        if init_instructions:
+            print(f"Initialization instructions loaded for {args.platform}")
+        all_tests = load_tests_from_sheet(args.sheet, platform=args.platform)
         print(f"Found {len(all_tests)} tests")
 
         # Filter by --test or --group
         if args.test:
-            tests = [t for t in all_tests if t["name"] == args.test]
+            test_names = set(args.test)
+            tests = [t for t in all_tests if t["name"] in test_names]
+            # Preserve the order from the sheet
             if not tests:
-                print(f"Error: No test found with name '{args.test}'")
+                print(f"Error: No tests found matching: {', '.join(args.test)}")
                 print("Available tests:")
                 for t in all_tests:
                     print(f"  [{t['grouping']}] {t['name']}")
@@ -465,10 +485,11 @@ async def main():
 
         # Dry run — just list tests
         if args.dry_run:
-            print(f"\nDry run — {len(tests)} tests would be executed:\n")
+            print(f"\nDry run — {len(tests)} tests would be executed (platform: {args.platform}):\n")
             for i, t in enumerate(tests, 1):
                 step = t["steps"][0]
                 print(f"  {i}. [{t['grouping']}] {t['name']}")
+                print(f"     Platform: {t['platform']}")
                 print(f"     Action: {step['action']}")
                 print(f"     Expected: {step['expected']}")
                 if step.get("state_before"):
@@ -484,12 +505,28 @@ async def main():
             print("Error: ANTHROPIC_API_KEY environment variable not set")
             sys.exit(1)
 
-        runner = TestRunner(api_key)
+        runner = TestRunner(api_key, initialization_instructions=init_instructions)
+
+        # Navigate to URL before first test (browser only)
+        if args.url and args.platform == "browser":
+            print(f"\nNavigating to: {args.url}")
+            nav_result = await runner.run_step(
+                0, f"Open a new tab in Google Chrome (Cmd+T) and navigate to {args.url}. Wait for the page to fully load.",
+                "Page is loaded and visible", verbose=True
+            )
+            if nav_result.status == "error":
+                print(f"Error navigating to URL: {nav_result.error_message}")
+                sys.exit(1)
+            print(f"Navigation: {nav_result.status.upper()}\n")
+        elif args.url and args.platform != "browser":
+            print(f"\nSkipping URL navigation (not supported on {args.platform} platform)")
+
         all_results = []
         sheet_results = []
 
-        for test_config in tests:
-            result = await runner.run_test(test_config)
+        for i, test_config in enumerate(tests):
+            keep_context = args.sequential and i > 0
+            result = await runner.run_test(test_config, keep_context=keep_context)
             all_results.append(result)
 
             # Collect results for writing back to sheet
@@ -497,8 +534,10 @@ async def main():
                 sheet_results.append({
                     "grouping": step.grouping,
                     "test_name": step.test_name,
+                    "action": step.action,
                     "expected": step.expected,
-                    "actual": step.actual or step.error_message or "",
+                    "cua_comments": step.cua_comments or step.error_message or "",
+                    "debug_results": step.actual or "",
                 })
 
             if args.report:
@@ -510,9 +549,9 @@ async def main():
             rows_written = write_results_to_sheet(args.sheet, sheet_results)
             print(f"\nWrote {rows_written} result(s) to Google Sheet Results tab")
 
-        # Exit with appropriate code
-        any_failed = any(r.status != "pass" for r in all_results)
-        sys.exit(1 if any_failed else 0)
+        # Exit with appropriate code (only errors are failures)
+        any_errors = any(r.status == "error" for r in all_results)
+        sys.exit(1 if any_errors else 0)
 
     # YAML mode (existing behavior)
     else:
