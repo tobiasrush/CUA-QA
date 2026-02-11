@@ -32,6 +32,25 @@ from anthropic.types.beta import BetaMessage, BetaMessageParam
 from anthropic import APIResponse
 
 
+# Pricing per million tokens (USD)
+MODEL_PRICING = {
+    "claude-opus-4-6":   {"input": 5.00, "output": 25.00},
+    "claude-opus-4-5":   {"input": 5.00, "output": 25.00},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5":  {"input": 1.00, "output": 5.00},
+    # Gemini models
+    "gemini-2.5-computer-use-preview-10-2025": {"input": 1.25, "output": 10.00},
+    "gemini-3-flash-preview":                  {"input": 1.25, "output": 10.00},
+    "gemini-3-pro-preview":                    {"input": 1.25, "output": 10.00},
+}
+
+
+def calculate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+    """Calculate USD cost from token counts and model name."""
+    pricing = MODEL_PRICING.get(model, MODEL_PRICING["claude-opus-4-6"])
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+
+
 @dataclass
 class StepResult:
     """Result of a single test step."""
@@ -49,6 +68,9 @@ class StepResult:
     state_after: str = ""
     test_name: str = ""
     grouping: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: str = ""
 
 
 @dataclass
@@ -77,10 +99,11 @@ class TestResult:
 class TestRunner:
     """Runs CUA QA tests from YAML test scripts."""
 
-    def __init__(self, api_key: str, model: str = "claude-opus-4-6", initialization_instructions: str = ""):
+    def __init__(self, api_key: str, model: str = "claude-opus-4-6", provider: str = "anthropic", initialization_instructions: str = ""):
         self.api_key = api_key
         self.model = model
-        self.provider = APIProvider.ANTHROPIC
+        self.provider_name = provider
+        self.provider = APIProvider.ANTHROPIC  # used only for anthropic path
         self.screenshots_dir = Path("screenshots")
         self.reports_dir = Path("reports")
         self.screenshots_dir.mkdir(exist_ok=True)
@@ -147,8 +170,10 @@ class TestRunner:
             result.steps.append(step_result)
 
             if verbose:
+                step_cost = calculate_cost(step_result.input_tokens, step_result.output_tokens, step_result.model)
                 print(f"  Result: {step_result.status.upper()}")
                 print(f"  Duration: {step_result.duration_seconds:.1f}s")
+                print(f"  Tokens: {step_result.input_tokens:,} in / {step_result.output_tokens:,} out (${step_cost:.4f})")
                 if step_result.actual:
                     print(f"  Debug Results: {step_result.actual[:200]}")
                 if step_result.error_message:
@@ -158,10 +183,15 @@ class TestRunner:
         result.status = 'error' if result.error_count > 0 else 'done'
 
         if verbose:
+            total_in = sum(s.input_tokens for s in result.steps)
+            total_out = sum(s.output_tokens for s in result.steps)
+            test_cost = sum(calculate_cost(s.input_tokens, s.output_tokens, s.model) for s in result.steps)
             print(f"\n{'='*60}")
             print(f"Test Complete: {result.status.upper()}")
             print(f"  Steps: {len(result.steps)}")
             print(f"  Errors: {result.error_count}/{len(result.steps)}")
+            print(f"  Tokens: {total_in:,} in / {total_out:,} out")
+            print(f"  Cost: ${test_cost:.4f}")
             print(f"{'='*60}\n")
 
         return result
@@ -241,18 +271,30 @@ class TestRunner:
             if self.initialization_instructions:
                 system_suffix_parts.append(self.initialization_instructions)
 
-            await sampling_loop(
-                model=self.model,
-                provider=self.provider,
-                system_prompt_suffix="\n".join(system_suffix_parts),
-                messages=self.messages,
-                output_callback=output_callback,
-                tool_output_callback=tool_output_callback,
-                api_response_callback=api_response_callback,
-                api_key=self.api_key,
-                only_n_most_recent_images=3,
-                max_tokens=4096,
-            )
+            if self.provider_name == "gemini":
+                from computer_use_demo.gemini_loop import sampling_loop_gemini
+                _, token_usage = await sampling_loop_gemini(
+                    model=self.model,
+                    system_prompt_suffix="\n".join(system_suffix_parts),
+                    messages=self.messages,
+                    output_callback=output_callback,
+                    tool_output_callback=tool_output_callback,
+                    api_key=self.api_key,
+                    max_turns=15,
+                )
+            else:
+                _, token_usage = await sampling_loop(
+                    model=self.model,
+                    provider=self.provider,
+                    system_prompt_suffix="\n".join(system_suffix_parts),
+                    messages=self.messages,
+                    output_callback=output_callback,
+                    tool_output_callback=tool_output_callback,
+                    api_response_callback=api_response_callback,
+                    api_key=self.api_key,
+                    only_n_most_recent_images=3,
+                    max_tokens=4096,
+                )
 
             step_duration = time.monotonic() - step_start
 
@@ -276,6 +318,9 @@ class TestRunner:
                 duration_seconds=step_duration,
                 state_before=state_before,
                 state_after=state_after,
+                input_tokens=token_usage["input_tokens"],
+                output_tokens=token_usage["output_tokens"],
+                model=token_usage["model"],
             )
 
         except Exception as e:
@@ -442,6 +487,7 @@ async def main():
     parser.add_argument("--platform", choices=["browser", "ios", "android"], default="browser", help="Target platform (default: browser)")
     parser.add_argument("--sequential", action="store_true", help="Share CUA conversation context across tests (for dependent test sequences)")
     parser.add_argument("--url", metavar="URL", help="Navigate to this URL before running tests")
+    parser.add_argument("--provider", choices=["anthropic", "gemini"], default="anthropic", help="AI provider (default: anthropic)")
     args = parser.parse_args()
 
     if not args.sheet and not args.test_file:
@@ -499,13 +545,23 @@ async def main():
                 print()
             sys.exit(0)
 
-        # Run tests
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            print("Error: ANTHROPIC_API_KEY environment variable not set")
-            sys.exit(1)
+        # Run tests — select API key and default model based on provider
+        if args.provider == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                print("Error: GEMINI_API_KEY environment variable not set")
+                sys.exit(1)
+            from computer_use_demo.gemini_loop import GEMINI_MODEL
+            default_model = GEMINI_MODEL
+        else:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                print("Error: ANTHROPIC_API_KEY environment variable not set")
+                sys.exit(1)
+            default_model = "claude-opus-4-6"
 
-        runner = TestRunner(api_key, initialization_instructions=init_instructions)
+        print(f"Provider: {args.provider} | Model: {default_model}")
+        runner = TestRunner(api_key, model=default_model, provider=args.provider, initialization_instructions=init_instructions)
 
         # Navigate to URL before first test (browser only)
         if args.url and args.platform == "browser":
@@ -544,6 +600,19 @@ async def main():
                 report_path = runner.generate_report(result)
                 print(f"Report generated: {report_path}")
 
+        # Print token usage and cost summary
+        grand_in = sum(s.input_tokens for r in all_results for s in r.steps)
+        grand_out = sum(s.output_tokens for r in all_results for s in r.steps)
+        grand_cost = sum(calculate_cost(s.input_tokens, s.output_tokens, s.model) for r in all_results for s in r.steps)
+        model_used = all_results[0].steps[0].model if all_results and all_results[0].steps else "unknown"
+        print(f"\n{'='*60}")
+        print(f"Cost Summary ({model_used})")
+        print(f"  Input:  {grand_in:,} tokens")
+        print(f"  Output: {grand_out:,} tokens")
+        print(f"  Total:  {grand_in + grand_out:,} tokens")
+        print(f"  Cost:   ${grand_cost:.4f}")
+        print(f"{'='*60}")
+
         # Write results back to Google Sheet
         if sheet_results:
             rows_written = write_results_to_sheet(args.sheet, sheet_results)
@@ -555,17 +624,26 @@ async def main():
 
     # YAML mode (existing behavior)
     else:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            print("Error: ANTHROPIC_API_KEY environment variable not set")
-            sys.exit(1)
+        if args.provider == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                print("Error: GEMINI_API_KEY environment variable not set")
+                sys.exit(1)
+            from computer_use_demo.gemini_loop import GEMINI_MODEL
+            default_model = GEMINI_MODEL
+        else:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                print("Error: ANTHROPIC_API_KEY environment variable not set")
+                sys.exit(1)
+            default_model = "claude-opus-4-6"
 
         test_path = args.test_file
         if not Path(test_path).exists():
             print(f"Error: Test file not found: {test_path}")
             sys.exit(1)
 
-        runner = TestRunner(api_key)
+        runner = TestRunner(api_key, model=default_model, provider=args.provider)
         result = await runner.run_test(test_path)
 
         if args.report:

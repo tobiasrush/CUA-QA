@@ -87,6 +87,9 @@ async def sampling_loop(
         f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
     )
 
+    total_input_tokens = 0
+    total_output_tokens = 0
+
     turns = 0
     while turns < max_turns:
         if only_n_most_recent_images:
@@ -116,6 +119,10 @@ async def sampling_loop(
 
         response = raw_response.parse()
 
+        if hasattr(response, 'usage') and response.usage:
+            total_input_tokens += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
+
         messages.append(
             {
                 "role": "assistant",
@@ -137,12 +144,12 @@ async def sampling_loop(
                 tool_output_callback(result, content_block.id)
 
         if not tool_result_content:
-            return messages
+            return messages, {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "model": model}
 
         messages.append({"content": tool_result_content, "role": "user"})
         turns += 1
 
-    return messages
+    return messages, {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "model": model}
 
 
 def _maybe_filter_to_n_most_recent_images(
