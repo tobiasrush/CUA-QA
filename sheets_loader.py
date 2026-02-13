@@ -65,7 +65,7 @@ def load_tests_from_sheet(sheet_id: str, platform: str = "browser", tab_name: st
     header = [h.strip().lower().replace(" ", "_") for h in rows[0]]
     col = {}
     for name in [
-        "groupings", "action_general", "action_browser", "action_ios", "action_android",
+        "step", "groupings", "action_general", "action_browser", "action_ios", "action_android",
         "test_name", "state_before", "state_after", "expected_outcome",
     ]:
         col[name] = header.index(name) if name in header else None
@@ -84,6 +84,7 @@ def load_tests_from_sheet(sheet_id: str, platform: str = "browser", tab_name: st
             idx = col.get(name)
             return row[idx].strip() if idx is not None else ""
 
+        step = get("step")
         grouping_cell = get("groupings")
         test_name = get("test_name")
         state_before = get("state_before")
@@ -110,6 +111,7 @@ def load_tests_from_sheet(sheet_id: str, platform: str = "browser", tab_name: st
             continue
 
         tests.append({
+            "step": step,
             "name": test_name,
             "grouping": current_grouping,
             "platform": platform,
@@ -159,16 +161,41 @@ def load_initialization_from_sheet(sheet_id: str, platform: str = "browser", tab
     return ""
 
 
-RESULTS_HEADER = ["Date/Time", "Groupings", "Test_Name", "Action", "Expected_Outcome", "CUA_Comments", "Debug_Results"]
+RESULTS_HEADER = ["Test_Run", "Date", "Groupings", "Test_Name", "TestScript_Action", "CUA_Action", "Expected_Outcome", "CUA_Result", "Debug_Results", "CUA_Thinking", "Claude_Evaluating"]
+
+
+def _get_next_test_run(worksheet) -> int:
+    """Determine the next Test_Run number by reading existing data."""
+    all_values = worksheet.get_all_values()
+    if len(all_values) <= 1:
+        return 1
+    max_run = 0
+    for row in all_values[1:]:
+        try:
+            val = int(row[0])
+            if val > max_run:
+                max_run = val
+        except (ValueError, IndexError):
+            continue
+    return max_run + 1
 
 
 def write_results_to_sheet(
-    sheet_id: str, results: list[dict], tab_name: str = "Results"
+    sheet_id: str, results: list[dict], tab_name: str = "Results",
+    test_run: int | None = None,
 ) -> int:
     """Append test results to the Results tab.
 
-    Columns: Date/Time, Groupings, Test_Name, Action, Expected_Outcome, CUA_Comments, Debug_Results.
-    Returns the number of rows written.
+    Columns: Test_Run, Date, Groupings, Test_Name, TestScript_Action, CUA_Action,
+             Expected_Outcome, CUA_Result, Debug_Results, CUA_Thinking, Claude_Evaluating.
+
+    Args:
+        sheet_id: Google Sheet ID.
+        results: List of result dicts (see column mapping below).
+        tab_name: Worksheet name (default "Results").
+        test_run: Explicit run number. If None, auto-increments from existing data.
+
+    Returns the test_run number used.
     """
     client = get_sheets_client()
     sheet = client.open_by_key(sheet_id)
@@ -179,44 +206,64 @@ def write_results_to_sheet(
         worksheet = sheet.add_worksheet(title=tab_name, rows=1000, cols=len(RESULTS_HEADER))
         worksheet.append_row(RESULTS_HEADER)
 
+    if test_run is None:
+        test_run = _get_next_test_run(worksheet)
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows_to_write = []
 
     for r in results:
         rows_to_write.append([
+            test_run,
             timestamp,
             r.get("grouping", ""),
             r.get("test_name", ""),
-            r.get("action", ""),
+            r.get("testscript_action", ""),
+            r.get("cua_action", ""),
             r.get("expected", ""),
-            r.get("cua_comments", ""),
+            r.get("cua_result", ""),
             r.get("debug_results", ""),
+            r.get("cua_thinking", ""),
+            r.get("claude_evaluating", ""),
         ])
 
     if rows_to_write:
         worksheet.append_rows(rows_to_write, value_input_option="USER_ENTERED")
 
-    return len(rows_to_write)
+    return test_run
 
 
 if __name__ == "__main__":
     """Standalone test: read the sheet and print parsed tests."""
     import argparse
+    import json
 
     parser = argparse.ArgumentParser(description="Test Google Sheets loader")
     parser.add_argument("sheet_id", nargs="?", default="12zDcMDPiGV-0UhbIFT50K7DgOwIRebg9u8eCV9umg4k")
     parser.add_argument("--platform", choices=["browser", "ios", "android"], default="browser")
+    parser.add_argument("--json", action="store_true", help="Output tests and initialization as JSON")
     args = parser.parse_args()
 
-    print(f"Loading tests from sheet: {args.sheet_id} (platform: {args.platform})")
     tests = load_tests_from_sheet(args.sheet_id, platform=args.platform)
+    initialization = load_initialization_from_sheet(args.sheet_id, platform=args.platform)
 
-    print(f"\nFound {len(tests)} tests:\n")
-    for t in tests:
-        print(f"  [{t['grouping']}] {t['name']} (platform: {t['platform']})")
-        step = t["steps"][0]
-        print(f"    Action: {step['action']}")
-        print(f"    State Before: {step['state_before']}")
-        print(f"    State After: {step['state_after']}")
-        print(f"    Expected: {step['expected']}")
-        print()
+    if args.json:
+        output = {
+            "sheet_id": args.sheet_id,
+            "platform": args.platform,
+            "initialization": initialization,
+            "test_count": len(tests),
+            "tests": tests,
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        print(f"Loading tests from sheet: {args.sheet_id} (platform: {args.platform})")
+        print(f"\nFound {len(tests)} tests:\n")
+        for t in tests:
+            print(f"  [{t['grouping']}] {t['name']} (platform: {t['platform']})")
+            step = t["steps"][0]
+            print(f"    Action: {step['action']}")
+            print(f"    State Before: {step['state_before']}")
+            print(f"    State After: {step['state_after']}")
+            print(f"    Expected: {step['expected']}")
+            print()

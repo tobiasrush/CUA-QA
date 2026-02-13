@@ -1,0 +1,217 @@
+============================================================
+  COMPREHENSIVE CUA INPUT DIAGNOSTIC
+============================================================
+Target URL: https://demo.useideem.com/umfa.html?debug=true
+Test text:  'diag_user'
+Time:       2026-02-10 16:41:58
+
+────────────────────────────────────────────────────────────
+  PRE-FLIGHT CHECKS
+────────────────────────────────────────────────────────────
+pyautogui.size(): 1920x1080
+Screenshot pixel size: 1920x1080
+Retina scale (pixels/points): 1.0x
+Clipboard roundtrip (pbcopy->pbpaste): OK (got: 'CLIPBOARD_TEST_123')
+Accessibility: if pyautogui clicks work at all, permissions are OK
+(Full test will confirm via actual click results)
+
+────────────────────────────────────────────────────────────
+  LAUNCHING CHROME
+────────────────────────────────────────────────────────────
+Input found via: input#username
+
+────────────────────────────────────────────────────────────
+  SCROLLING INPUT INTO VIEW
+────────────────────────────────────────────────────────────
+Scrolled: scrollY 0 -> 469
+Input rect Y: 838 -> 369
+Viewport height: 761
+Input now in view: YES
+
+────────────────────────────────────────────────────────────
+  COORDINATE ANALYSIS
+────────────────────────────────────────────────────────────
+Window: screenX=0 screenY=30
+Window: outer=1280x900 inner=1280x761
+Chrome toolbar height: 139px
+devicePixelRatio: 1
+screen: 1920x1080 (avail: 1920x960)
+Input CSS rect: x=137.0 y=368.6 w=126.0 h=23.0
+
+Computed screen coordinates (3 methods):
+  Method A (JS rect + window): (200, 549)
+  Method B (with DPR=1):    (200, 549)
+  Method C (Selenium loc):      (200, 1018)
+
+────────────────────────────────────────────────────────────
+  PIXEL-LEVEL CLICK VERIFICATION
+────────────────────────────────────────────────────────────
+Input painted red (#FF0000) with green border for visual verification
+Checking pixel colors at each candidate coordinate:
+
+  A_js_rect: (200, 549) -> pixel(200,549) = RGB(77,0,0) (not input)
+  B_dpr_adjusted: (200, 549) -> pixel(200,549) = RGB(77,0,0) (not input)
+  C_selenium_loc: (200, 1018) -> pixel(200,1018) = RGB(75,147,147) (not input)
+
+Scanning grid around Method A to locate input red region...
+  Found 19 red pixels in scan area
+  Red region center: (196, 555)
+  Offset from Method A: dx=[-60,60] dy=[0,10]
+
+Screenshot saved: pixel_verification.png
+
+────────────────────────────────────────────────────────────
+  CLICK FOCUS TESTS
+────────────────────────────────────────────────────────────
+  A_js_rect: click(200, 549) -> focus=INPUT#username ** OK **
+  B_dpr_adjusted: click(200, 549) -> focus=INPUT#username ** OK **
+  C_selenium_loc: click(200, 1018) -> focus=INPUT#username ** OK **
+  D_pixel_verified: click(195, 554) -> focus=INPUT#username ** OK **
+
+  Best working coords: A_js_rect = (200, 549)
+
+────────────────────────────────────────────────────────────
+  WEBAPP EVENT LISTENER ANALYSIS
+────────────────────────────────────────────────────────────
+Inline handlers: {
+  "onblur": false,
+  "onchange": false,
+  "onclick": false,
+  "onfocus": true,
+  "oninput": false,
+  "onkeydown": false,
+  "onkeypress": false,
+  "onkeyup": false,
+  "onmousedown": false,
+  "onpaste": false
+}
+Paste event test: {'defaultPrevented': False, 'handlerCalled': True, 'observedPrevention': False}
+Keydown cmd+v test: {'defaultPrevented': False, 'observedPrevention': False}
+Input attributes: {
+  "contentEditable": "inherit",
+  "disabled": false,
+  "display": "block",
+  "opacity": "1",
+  "pointerEvents": "auto",
+  "position": "relative",
+  "readOnly": false,
+  "userSelect": "auto",
+  "visibility": "visible",
+  "zIndex": "auto"
+}
+Context: {'documentHasFocus': False, 'inIframe': False, 'inShadowRoot': False}
+Notable parent elements:
+  DIV#None pointer-events=auto overflow=hidden position=absolute z-index=1
+
+────────────────────────────────────────────────────────────
+  TYPING MECHANISM TESTS
+────────────────────────────────────────────────────────────
+
+  [A: pbcopy + pyautogui cmd+v (CUA mechanism)] Focus before: INPUT#username
+    Clipboard before: 'CLIPBOARD_TEST_123'
+    Clipboard after pbcopy: 'diag_user'
+    Value: '' | Focus: INPUT#username | Clipboard after: 'diag_user'
+    Result: ** FAILED **
+
+  [B: pbcopy + AppleScript cmd+v] Focus before: INPUT#username
+    Value: 'diag_user' | Focus: INPUT#username
+    Result: OK
+
+  [C: AppleScript keystroke (no clipboard)] Focus before: INPUT#username
+    Value: 'diag_user' | Focus: INPUT#username
+    Result: OK
+
+  [D: pyautogui.typewrite (key events)] Focus before: INPUT#username
+    Value: 'diag_user' | Focus: INPUT#username
+    Result: OK
+
+  [E: pyautogui.write] Focus before: INPUT#username
+    Value: 'diag_user' | Focus: INPUT#username
+    Result: OK
+
+  [F: Selenium send_keys (baseline)] Focus before: INPUT#username
+    Value: 'diag_user'
+    Result: OK
+
+  [G: JS dispatchEvent input simulation] Focus before: INPUT#username
+    Value: 'diag_user'
+    Result: OK
+
+────────────────────────────────────────────────────────────
+  FOCUS PERSISTENCE TESTS
+────────────────────────────────────────────────────────────
+  0.5s: before=INPUT#username after=INPUT#username -> OK
+  1s: before=INPUT#username after=INPUT#username -> OK
+  3s: before=INPUT#username after=INPUT#username -> OK
+  5s: before=INPUT#username after=INPUT#username -> OK
+
+────────────────────────────────────────────────────────────
+  CHROME ADDRESS BAR PASTE TEST (control)
+────────────────────────────────────────────────────────────
+  Testing if pbcopy + cmd+v works in the address bar...
+  (This verifies pyautogui paste works outside the webapp)
+  Clipboard still intact: 'about:blank' (expected 'about:blank')
+
+────────────────────────────────────────────────────────────
+  CUA COORDINATE SCALING ANALYSIS
+────────────────────────────────────────────────────────────
+CUA ComputerTool.__init__ would compute:
+  pyautogui.size() = (1920, 1080)
+  scale_factor = 1280/1920 = 0.666667
+  target = 1280x720
+  x_scaling_factor = 1920/1280 = 1.500000
+  y_scaling_factor = 1080/720 = 1.500000
+
+  Round-trip test:
+    Real coords:    (200, 549)
+    -> API coords:  (133, 366)
+    -> Back to real: (200, 549)
+    Drift:          (0px, 0px)
+
+Final screenshot saved: final_state.png
+
+────────────────────────────────────────────────────────────
+  COMPREHENSIVE SUMMARY
+────────────────────────────────────────────────────────────
+
+  ENVIRONMENT:
+    Screen: (1920, 1080)
+    Retina scale: 1.0x
+    Clipboard: OK
+
+  COORDINATE RESULTS:
+    Working click method: A_js_rect
+    Working click coords: (200, 549)
+    CUA round-trip drift: (0, 0)
+    Aspect ratio skew: No
+
+  TYPING MECHANISM RESULTS:
+    A: pbcopy + pyautogui cmd+v (CUA): NO **
+    B: pbcopy + AppleScript paste: YES
+    C: AppleScript keystroke: YES
+    D: pyautogui.typewrite: YES
+    E: pyautogui.write: YES
+    F: Selenium send_keys: YES
+    G: JS dispatchEvent: YES
+
+  FOCUS PERSISTENCE:
+    Holds after 0.5s: YES
+    Holds after 1s: YES
+    Holds after 3s: YES
+    Holds after 5s: YES
+
+  EVENT ANALYSIS:
+    Paste event prevented: No
+    Keydown cmd+v prevented: No
+
+────────────────────────────────────────────────────────────
+  DIAGNOSIS
+────────────────────────────────────────────────────────────
+  1. pyautogui.hotkey('command','v') doesn't paste, but AppleScript does -> pyautogui hotkey issue
+
+  RECOMMENDED FIX:
+  -> Replace pbcopy+cmd+v with pyautogui.typewrite() in ComputerTool
+     Change type action in computer.py to use typewrite instead of clipboard
+
+============================================================
+Full results saved: diagnostic_results.json

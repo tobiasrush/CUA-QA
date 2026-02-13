@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUA Input Diagnostic</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 40px;
+        }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .input-container {
+            width: 400px;
+            margin-bottom: 30px;
+        }
+        label {
+            display: block;
+            font-size: 16px;
+            margin-bottom: 8px;
+            color: #555;
+        }
+        input#test-input {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 20px;
+            border: 3px solid #333;
+            border-radius: 8px;
+            outline: none;
+            background: #fafafa;
+        }
+        input#test-input:focus {
+            border-color: #0066ff;
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.2);
+        }
+        #event-log {
+            width: 600px;
+            max-height: 400px;
+            overflow-y: auto;
+            background: #1a1a1a;
+            color: #0f0;
+            font-family: 'Menlo', 'Monaco', monospace;
+            font-size: 13px;
+            padding: 16px;
+            border-radius: 8px;
+            line-height: 1.6;
+        }
+        .event-entry {
+            border-bottom: 1px solid #333;
+            padding: 2px 0;
+        }
+        .event-focus { color: #0ff; }
+        .event-blur { color: #f66; }
+        .event-input { color: #0f0; }
+        .event-paste { color: #ff0; }
+        .event-click { color: #f0f; }
+        .event-keydown { color: #aaf; }
+        .status-bar {
+            margin-top: 20px;
+            padding: 12px 20px;
+            background: #f0f0f0;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #333;
+            width: 600px;
+        }
+        .status-bar span { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>CUA Input Diagnostic Page</h1>
+
+    <div class="input-container">
+        <label for="test-input">Type or paste text here:</label>
+        <input type="text" id="test-input" placeholder="Click here and type...">
+    </div>
+
+    <div class="status-bar">
+        Focus: <span id="focus-status">none</span> |
+        Value: <span id="value-status">(empty)</span> |
+        Events: <span id="event-count">0</span>
+    </div>
+
+    <div id="event-log"></div>
+
+    <script>
+        const input = document.getElementById('test-input');
+        const log = document.getElementById('event-log');
+        const focusStatus = document.getElementById('focus-status');
+        const valueStatus = document.getElementById('value-status');
+        const eventCount = document.getElementById('event-count');
+        let count = 0;
+
+        function logEvent(type, detail, cssClass) {
+            count++;
+            eventCount.textContent = count;
+            const ts = new Date().toISOString().split('T')[1].replace('Z', '');
+            const entry = document.createElement('div');
+            entry.className = `event-entry ${cssClass}`;
+            entry.textContent = `[${ts}] ${type}: ${detail}`;
+            log.insertBefore(entry, log.firstChild);
+        }
+
+        function updateValue() {
+            valueStatus.textContent = input.value || '(empty)';
+        }
+
+        input.addEventListener('focus', () => {
+            focusStatus.textContent = 'input#test-input';
+            focusStatus.style.color = '#0066ff';
+            logEvent('FOCUS', 'input#test-input gained focus', 'event-focus');
+        });
+
+        input.addEventListener('blur', () => {
+            focusStatus.textContent = 'none';
+            focusStatus.style.color = '#c00';
+            logEvent('BLUR', 'input#test-input lost focus', 'event-blur');
+        });
+
+        input.addEventListener('click', (e) => {
+            logEvent('CLICK', `at (${e.clientX}, ${e.clientY})`, 'event-click');
+        });
+
+        input.addEventListener('mousedown', (e) => {
+            logEvent('MOUSEDOWN', `at (${e.clientX}, ${e.clientY}) button=${e.button}`, 'event-click');
+        });
+
+        input.addEventListener('input', (e) => {
+            updateValue();
+            logEvent('INPUT', `value="${input.value}" inputType=${e.inputType || 'n/a'}`, 'event-input');
+        });
+
+        input.addEventListener('paste', (e) => {
+            const data = e.clipboardData ? e.clipboardData.getData('text') : '(no data)';
+            logEvent('PASTE', `clipboardData="${data}"`, 'event-paste');
+            updateValue();
+        });
+
+        input.addEventListener('keydown', (e) => {
+            logEvent('KEYDOWN', `key="${e.key}" code="${e.code}" meta=${e.metaKey} ctrl=${e.ctrlKey}`, 'event-keydown');
+        });
+
+        input.addEventListener('keyup', (e) => {
+            logEvent('KEYUP', `key="${e.key}" code="${e.code}"`, 'event-keydown');
+        });
+
+        // Also track document-level focus changes
+        document.addEventListener('focusin', (e) => {
+            if (e.target !== input) {
+                logEvent('DOC-FOCUSIN', `${e.target.tagName}#${e.target.id || '(none)'}`, 'event-blur');
+            }
+        });
+
+        // Track if anything steals focus
+        setInterval(() => {
+            const active = document.activeElement;
+            const isFocused = active === input;
+            focusStatus.textContent = isFocused
+                ? 'input#test-input'
+                : `${active.tagName}#${active.id || '(none)'}`;
+            focusStatus.style.color = isFocused ? '#0066ff' : '#c00';
+        }, 500);
+    </script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+{
+  "screen_size": [
+    1920,
+    1080
+  ],
+  "retina_scale": 1.0,
+  "pixel_size": [
+    1920,
+    1080
+  ],
+  "clipboard_roundtrip": true,
+  "pixel_verified_coords": [
+    195,
+    554
+  ],
+  "click_A_js_rect_works": true,
+  "click_B_dpr_adjusted_works": true,
+  "click_C_selenium_loc_works": true,
+  "click_D_pixel_verified_works": true,
+  "working_click_method": "A_js_rect",
+  "working_click_coords": [
+    200,
+    549
+  ],
+  "paste_prevented": false,
+  "keydown_cmdv_prevented": false,
+  "A_pbcopy_pyautogui_cmdv": false,
+  "B_pbcopy_applescript_paste": true,
+  "C_applescript_keystroke": true,
+  "D_pyautogui_typewrite": true,
+  "E_pyautogui_write": true,
+  "F_selenium_send_keys": true,
+  "G_js_dispatch": true,
+  "focus_holds_0.5s": true,
+  "focus_holds_1s": true,
+  "focus_holds_3s": true,
+  "focus_holds_5s": true,
+  "address_bar_paste": true,
+  "aspect_ratio_skew": false,
+  "cua_roundtrip_drift": [
+    0,
+    0
+  ]
+}
